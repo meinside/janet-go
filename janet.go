@@ -4,7 +4,7 @@
 package janet
 
 /*
-#cgo CFLAGS: -I./vendor/janet/src/include -I./vendor/janet/src/conf -I./amalgamated
+#cgo CFLAGS: -I./vendor/janet -I./vendor/janet/src/include -I./vendor/janet/src/conf -I./amalgamated
 #cgo LDFLAGS: -lm -lpthread -ldl
 #include "amalgamated/janet.c"
 */
