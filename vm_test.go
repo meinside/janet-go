@@ -16,56 +16,91 @@ func TestVM(t *testing.T) {
 	defer vm.Close()
 
 	tests := []struct {
-		input       string
-		expected    string
-		expectedErr string
+		input              string
+		expectedResult     string
+		expectedErrPattern string
 	}{
+		////////////////////////////////
 		// tests that should pass
+		//
+		// (arithmetic)
 		{
-			input:    "(+ 1 2 3)",
-			expected: "6",
+			input:          `(+ 1 2 3)`,
+			expectedResult: `6`,
 		},
 		{
-			input:    "(/ 42 10.0)",
-			expected: "4.200000",
+			input:          `(/ 42 10.0)`,
+			expectedResult: `4.2`,
 		},
 		{
-			input:    "(defn add [x y] (+ x y))",
-			expected: "<function add>",
+			input:          `(/ 1 0)`,
+			expectedResult: `inf`,
+		},
+		// (integers and floats)
+		{
+			input:          `100`,
+			expectedResult: `100`,
 		},
 		{
-			input:    "(add 1 2)",
-			expected: "3",
+			input:          `3.14`,
+			expectedResult: `3.14`,
 		},
 		{
-			input:    "nil",
-			expected: "nil",
+			input:          `-2.718`,
+			expectedResult: `-2.718`,
 		},
 		{
-			input:    "'(1 2 3)",
-			expected: "(1 2 3)",
+			input:          `10.000000`,
+			expectedResult: `10`,
+		},
+		// (function declaration and call)
+		{
+			input:          `(defn add [x y] (+ x y))`,
+			expectedResult: `<function add>`,
 		},
 		{
-			input:    "'(1 2 (3 4) 5)",
-			expected: "(1 2 (3 4) 5)",
+			input:          `(add 1 2)`,
+			expectedResult: `3`,
+		},
+		// (tuples)
+		{
+			input:          `'(1 2 3)`,
+			expectedResult: `(1 2 3)`,
+		},
+		{
+			input:          `'(1 2 (3 4) 5)`,
+			expectedResult: `(1 2 (3 4) 5)`,
+		},
+		// (nil)
+		{
+			input:          `nil`,
+			expectedResult: `nil`,
 		},
 
+		////////////////////////////////
 		// expected errors
+		//
+		// (malformed expressions)
 		{
-			input:       "(malformed expression",
-			expectedErr: "unexpected end of source",
+			input:              `(malformed expression`,
+			expectedErrPattern: `unexpected end of source`,
+		},
+		// (unknown symbols)
+		{
+			input:              `(no-such-func 1 2 3)`,
+			expectedErrPattern: `unknown symbol`,
 		},
 	}
 
 	for _, test := range tests {
 		output, err := vm.ExecuteString(test.input)
 		if err != nil {
-			if !strings.Contains(err.Error(), test.expectedErr) {
-				t.Errorf("Expected error '%s', got '%s'", test.expectedErr, err)
+			if !strings.Contains(err.Error(), test.expectedErrPattern) {
+				t.Errorf("Expected error pattern '%s', got '%s'", test.expectedErrPattern, err)
 			}
 		} else {
-			if output != test.expected {
-				t.Errorf("Expected '%s', got '%s'", test.expected, output)
+			if output != test.expectedResult {
+				t.Errorf("Expected '%s', got '%s'", test.expectedResult, output)
 			}
 		}
 	}
