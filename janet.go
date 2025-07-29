@@ -71,11 +71,12 @@ func janetValueToString(value C.Janet) string {
 		}
 		return "false"
 	case C.JANET_NUMBER:
-		num := C.janet_unwrap_number(value)
-		if num == C.double(int(num)) {
-			return fmt.Sprintf("%d", int(num))
-		}
-		return fmt.Sprintf("%f", num)
+		var buffer C.JanetBuffer
+		C.janet_buffer_init(&buffer, 0)
+		C.janet_to_string_b(&buffer, value)
+		output := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+		C.janet_buffer_deinit(&buffer)
+		return output
 	case C.JANET_STRING:
 		return C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_string(value))))
 	case C.JANET_SYMBOL:
@@ -106,14 +107,17 @@ func janetValueToString(value C.Janet) string {
 
 // ExecuteString executes a Janet string and returns the result.
 func (vm *VM) ExecuteString(code string) (string, error) {
+	// suppress error output,
 	C.redirectStderr()
 	defer C.restoreStderr()
 
+	// run janet code,
 	cCode := C.CString(code)
 	defer C.free(unsafe.Pointer(cCode))
 	var result C.Janet
 	ret := C.janet_dostring(vm.env, cCode, nil, &result)
 
+	// and return the result
 	if ret != C.JANET_SIGNAL_OK {
 		var buffer C.JanetBuffer
 		C.janet_buffer_init(&buffer, 0)
@@ -122,6 +126,5 @@ func (vm *VM) ExecuteString(code string) (string, error) {
 		C.janet_buffer_deinit(&buffer)
 		return "", errors.New(errOutput)
 	}
-
 	return janetValueToString(result), nil
 }
