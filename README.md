@@ -52,7 +52,7 @@ func main() {
 	// Execute a malformed expression (that will lead to an error)
 	_, err = vm.ExecuteString("(malformed expression")
 	if err != nil {
-		fmt.Println(err) // Output: unexpected end of source [...]
+		fmt.Println(err) // Output: unexpected end of source, ( opened at line 1, column 1
 	}
 }
 ```

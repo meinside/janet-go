@@ -42,5 +42,6 @@ cd -
 mkdir -p amalgamated
 cp "$JANET_DIR/build/c/janet.c" amalgamated/janet.c
 cp "$JANET_DIR/src/include/janet.h" amalgamated/janet.h
+cp "$JANET_DIR/src/conf/janetconf.h" amalgamated/janetconf.h
 
 echo "Finished generating amalgamated/janet.h and amalgamated/janet.c."
