@@ -2,7 +2,7 @@
 #
 # amalgamate.sh
 #
-# This script ensures the Janet source is present and builds the amalgamated janet.c file.
+# This script ensures the Janet source is present and builds the amalgamated janet.h/c file.
 #
 # (will be run by CGO)
 
@@ -41,5 +41,6 @@ cd -
 # Copy the generated janet.c to the current directory for cgo
 mkdir -p amalgamated
 cp "$JANET_DIR/build/c/janet.c" amalgamated/janet.c
+cp "$JANET_DIR/src/include/janet.h" amalgamated/janet.h
 
-echo "Finished generating amalgamated/janet.c."
+echo "Finished generating amalgamated/janet.h and amalgamated/janet.c."
