@@ -69,7 +69,3 @@ They need to be updated when there is a new release of Janet.
 
 For clearing files compiled by cgo, run `go clean -cache`.
 
-## License
-
-MIT
-
