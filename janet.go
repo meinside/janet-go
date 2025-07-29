@@ -7,6 +7,30 @@ package janet
 #cgo CFLAGS: -I./vendor/janet -I./vendor/janet/src/include -I./vendor/janet/src/conf -I./amalgamated
 #cgo LDFLAGS: -lm -lpthread -ldl
 #include "amalgamated/janet.c"
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+static int original_stderr_fd = -1;
+
+static void redirectStderr() {
+    fflush(stderr);
+    original_stderr_fd = dup(STDERR_FILENO);
+    int devNull = open("/dev/null", O_WRONLY);
+    if (devNull != -1) {
+        dup2(devNull, STDERR_FILENO);
+        close(devNull);
+    }
+}
+
+static void restoreStderr() {
+    fflush(stderr);
+    if (original_stderr_fd != -1) {
+        dup2(original_stderr_fd, STDERR_FILENO);
+        close(original_stderr_fd);
+        original_stderr_fd = -1;
+    }
+}
 */
 import "C"
 
@@ -82,6 +106,9 @@ func janetValueToString(value C.Janet) string {
 
 // ExecuteString executes a Janet string and returns the result.
 func (vm *VM) ExecuteString(code string) (string, error) {
+	C.redirectStderr()
+	defer C.restoreStderr()
+
 	cCode := C.CString(code)
 	defer C.free(unsafe.Pointer(cCode))
 	var result C.Janet
