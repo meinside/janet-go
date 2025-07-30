@@ -11,32 +11,46 @@ package janet
 #include <unistd.h>
 #include <fcntl.h>
 
-static int original_stderr_fd = -1;
-
-static void redirectStderr() {
-    fflush(stderr);
-    original_stderr_fd = dup(STDERR_FILENO);
-    int devNull = open("/dev/null", O_WRONLY);
-    if (devNull != -1) {
-        dup2(devNull, STDERR_FILENO);
-        close(devNull);
-    }
+static int redirectStdout(int pipe_fd) {
+	fflush(stdout);
+	int original_fd = dup(STDOUT_FILENO);
+	dup2(pipe_fd, STDOUT_FILENO);
+	close(pipe_fd);
+	return original_fd;
 }
 
-static void restoreStderr() {
+static int redirectStderr(int pipe_fd) {
+	fflush(stderr);
+	int original_fd = dup(STDERR_FILENO);
+	dup2(pipe_fd, STDERR_FILENO);
+	close(pipe_fd);
+	return original_fd;
+}
+
+static void restoreStdout(int original_fd) {
+	fflush(stdout);
+	if (original_fd != -1) {
+		dup2(original_fd, STDOUT_FILENO);
+		close(original_fd);
+	}
+}
+
+static void restoreStderr(int original_fd) {
     fflush(stderr);
-    if (original_stderr_fd != -1) {
-        dup2(original_stderr_fd, STDERR_FILENO);
-        close(original_stderr_fd);
-        original_stderr_fd = -1;
+    if (original_fd != -1) {
+        dup2(original_fd, STDERR_FILENO);
+        close(original_fd);
     }
 }
 */
 import "C"
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"sync"
 	"unsafe"
 )
 
@@ -107,15 +121,22 @@ func janetValueToString(value C.Janet) string {
 
 // ExecuteString executes a Janet string and returns the result.
 func (vm *VM) ExecuteString(code string) (string, error) {
-	// suppress error output,
-	C.redirectStderr()
-	defer C.restoreStderr()
+	// suppress error output (redirect to /dev/null)
+	devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
+	defer func() { _ = devNull.Close() }()
+	originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
+	defer C.restoreStderr(originalStderrFd)
 
 	// run janet code,
 	cCode := C.CString(code)
 	defer C.free(unsafe.Pointer(cCode))
 	var result C.Janet
-	ret := C.janet_dostring(vm.env, cCode, nil, &result)
+	ret := C.janet_dostring(
+		vm.env,
+		cCode,
+		nil,
+		&result,
+	)
 
 	// and return the result
 	if ret != C.JANET_SIGNAL_OK {
@@ -127,4 +148,82 @@ func (vm *VM) ExecuteString(code string) (string, error) {
 		return "", errors.New(errOutput)
 	}
 	return janetValueToString(result), nil
+}
+
+// ExecuteStringWithOutput executes a Janet string and returns the result, along with any output to stdout and stderr.
+func (vm *VM) ExecuteStringWithOutput(code string) (
+	evaluated string,
+	stdout string,
+	stderr string,
+	err error,
+) {
+	// create pipes for stdout and stderr
+	var stdoutPipe [2]C.int
+	var stderrPipe [2]C.int
+	if C.pipe(&stdoutPipe[0]) != 0 {
+		return "", "", "", errors.New("failed to create stdout pipe")
+	}
+	if C.pipe(&stderrPipe[0]) != 0 {
+		return "", "", "", errors.New("failed to create stderr pipe")
+	}
+
+	// redirect stdout and stderr
+	originalStdoutFd := C.redirectStdout(stdoutPipe[1])
+	originalStderrFd := C.redirectStderr(stderrPipe[1])
+
+	// run janet code,
+	cCode := C.CString(code)
+	defer C.free(unsafe.Pointer(cCode))
+	var result C.Janet
+	ret := C.janet_dostring(
+		vm.env,
+		cCode,
+		nil,
+		&result,
+	)
+
+	// restore stdout and stderr
+	C.restoreStdout(originalStdoutFd)
+	C.restoreStderr(originalStderrFd)
+
+	// read from stdout/stderr pipes
+	var outBuf, errBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 1024)
+		for {
+			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			outBuf.Write(buf[:n])
+		}
+		C.close(stdoutPipe[0])
+	}()
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 1024)
+		for {
+			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			errBuf.Write(buf[:n])
+		}
+		C.close(stderrPipe[0])
+	}()
+	wg.Wait()
+
+	// and return the result
+	if ret != C.JANET_SIGNAL_OK {
+		var buffer C.JanetBuffer
+		C.janet_buffer_init(&buffer, 0)
+		C.janet_to_string_b(&buffer, result)
+		errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+		C.janet_buffer_deinit(&buffer)
+		return "", outBuf.String(), errBuf.String(), errors.New(errOutput)
+	}
+	return janetValueToString(result), outBuf.String(), errBuf.String(), nil
 }

@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// TestVM tests the Janet VM with a few simple expressions.
-func TestVM(t *testing.T) {
+// TestExecuteString tests the ExecuteString function.
+func TestExecuteString(t *testing.T) {
 	vm, err := NewVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
@@ -102,6 +102,65 @@ func TestVM(t *testing.T) {
 			if output != test.expectedResult {
 				t.Errorf("Expected '%s', got '%s'", test.expectedResult, output)
 			}
+		}
+	}
+}
+
+// TestExecuteStringWithOutput tests the ExecuteStringWithOutput function.
+func TestExecuteStringWithOutput(t *testing.T) {
+	vm, err := NewVM()
+	if err != nil {
+		t.Fatalf("Failed to create Janet VM: %v", err)
+	}
+	defer vm.Close()
+
+	tests := []struct {
+		input          string
+		expectedResult string
+		expectedStdout string
+		expectedStderr string
+		expectedErr    string
+	}{
+		{
+			input:          `(print "hello to stdout") (eprint "hello to stderr") "hello"`,
+			expectedResult: `hello`,
+			expectedStdout: "hello to stdout\n",
+			expectedStderr: "hello to stderr\n",
+		},
+		{
+			input:          `(error "intentional")`,
+			expectedResult: "",
+			expectedStdout: "",
+			expectedStderr: `error: intentional
+  in thunk pc=1
+`,
+			expectedErr: "intentional",
+		},
+	}
+
+	for _, test := range tests {
+		result, stdout, stderr, err := vm.ExecuteStringWithOutput(test.input)
+
+		if err != nil {
+			if test.expectedErr == "" {
+				t.Errorf("Unexpected error: %v", err)
+			} else if !strings.Contains(err.Error(), test.expectedErr) {
+				t.Errorf("Expected error containing '%s', got '%s'", test.expectedErr, err.Error())
+			}
+		} else if test.expectedErr != "" {
+			t.Errorf("Expected error '%s', but got none", test.expectedErr)
+		}
+
+		if result != test.expectedResult {
+			t.Errorf("Input: %s\nExpected result: '%s', got: '%s'", test.input, test.expectedResult, result)
+		}
+
+		if stdout != test.expectedStdout {
+			t.Errorf("Input: %s\nExpected stdout: '%s', got: '%s'", test.input, test.expectedStdout, stdout)
+		}
+
+		if stderr != test.expectedStderr {
+			t.Errorf("Input: %s\nExpected stderr: '%s', got: '%s'", test.input, test.expectedStderr, stderr)
 		}
 	}
 }
