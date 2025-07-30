@@ -47,6 +47,7 @@ import "C"
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -120,110 +121,166 @@ func janetValueToString(value C.Janet) string {
 }
 
 // ExecuteString executes a Janet string and returns the result.
-func (vm *VM) ExecuteString(code string) (string, error) {
-	// suppress error output (redirect to /dev/null)
-	devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
-	defer func() { _ = devNull.Close() }()
-	originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
-	defer C.restoreStderr(originalStderrFd)
-
-	// run janet code,
-	cCode := C.CString(code)
-	defer C.free(unsafe.Pointer(cCode))
-	var result C.Janet
-	ret := C.janet_dostring(
-		vm.env,
-		cCode,
-		nil,
-		&result,
-	)
-
-	// and return the result
-	if ret != C.JANET_SIGNAL_OK {
-		var buffer C.JanetBuffer
-		C.janet_buffer_init(&buffer, 0)
-		C.janet_to_string_b(&buffer, result)
-		errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-		C.janet_buffer_deinit(&buffer)
-		return "", errors.New(errOutput)
+func (vm *VM) ExecuteString(
+	ctx context.Context,
+	code string,
+) (string, error) {
+	type result struct {
+		value string
+		err   error
 	}
-	return janetValueToString(result), nil
+
+	resultCh := make(chan result, 1)
+
+	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
+	go func() {
+		// suppress error output (redirect to /dev/null)
+		devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
+		defer func() { _ = devNull.Close() }()
+		originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
+		defer C.restoreStderr(originalStderrFd)
+
+		// run janet code,
+		cCode := C.CString(code)
+		defer C.free(unsafe.Pointer(cCode))
+		var janetResult C.Janet
+		ret := C.janet_dostring(
+			vm.env,
+			cCode,
+			nil,
+			&janetResult,
+		)
+
+		// and return the result
+		if ret != C.JANET_SIGNAL_OK {
+			var buffer C.JanetBuffer
+			C.janet_buffer_init(&buffer, 0)
+			C.janet_to_string_b(&buffer, janetResult)
+			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+			C.janet_buffer_deinit(&buffer)
+			resultCh <- result{value: "", err: errors.New(errOutput)}
+			return
+		}
+		resultCh <- result{value: janetValueToString(janetResult), err: nil}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-resultCh:
+		return res.value, res.err
+	}
 }
 
 // ExecuteStringWithOutput executes a Janet string and returns the result, along with any output to stdout and stderr.
-func (vm *VM) ExecuteStringWithOutput(code string) (
+func (vm *VM) ExecuteStringWithOutput(
+	ctx context.Context,
+	code string,
+) (
 	evaluated string,
 	stdout string,
 	stderr string,
 	err error,
 ) {
-	// create pipes for stdout and stderr
-	var stdoutPipe [2]C.int
-	var stderrPipe [2]C.int
-	if C.pipe(&stdoutPipe[0]) != 0 {
-		return "", "", "", errors.New("failed to create stdout pipe")
-	}
-	if C.pipe(&stderrPipe[0]) != 0 {
-		return "", "", "", errors.New("failed to create stderr pipe")
+	type result struct {
+		evaluated string
+		stdout    string
+		stderr    string
+		err       error
 	}
 
-	// redirect stdout and stderr
-	originalStdoutFd := C.redirectStdout(stdoutPipe[1])
-	originalStderrFd := C.redirectStderr(stderrPipe[1])
+	resultCh := make(chan result, 1)
 
-	// run janet code,
-	cCode := C.CString(code)
-	defer C.free(unsafe.Pointer(cCode))
-	var result C.Janet
-	ret := C.janet_dostring(
-		vm.env,
-		cCode,
-		nil,
-		&result,
-	)
-
-	// restore stdout and stderr
-	C.restoreStdout(originalStdoutFd)
-	C.restoreStderr(originalStderrFd)
-
-	// read from stdout/stderr pipes
-	var outBuf, errBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
-		defer wg.Done()
-		buf := make([]byte, 1024)
-		for {
-			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			outBuf.Write(buf[:n])
+		// create pipes for stdout and stderr
+		var stdoutPipe [2]C.int
+		var stderrPipe [2]C.int
+		if C.pipe(&stdoutPipe[0]) != 0 {
+			resultCh <- result{err: errors.New("failed to create stdout pipe")}
+			return
 		}
-		C.close(stdoutPipe[0])
-	}()
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 1024)
-		for {
-			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			errBuf.Write(buf[:n])
+		if C.pipe(&stderrPipe[0]) != 0 {
+			resultCh <- result{err: errors.New("failed to create stderr pipe")}
+			return
 		}
-		C.close(stderrPipe[0])
-	}()
-	wg.Wait()
 
-	// and return the result
-	if ret != C.JANET_SIGNAL_OK {
-		var buffer C.JanetBuffer
-		C.janet_buffer_init(&buffer, 0)
-		C.janet_to_string_b(&buffer, result)
-		errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-		C.janet_buffer_deinit(&buffer)
-		return "", outBuf.String(), errBuf.String(), errors.New(errOutput)
+		// redirect stdout and stderr
+		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
+		originalStderrFd := C.redirectStderr(stderrPipe[1])
+
+		// run janet code,
+		cCode := C.CString(code)
+		defer C.free(unsafe.Pointer(cCode))
+		var janetResult C.Janet
+		ret := C.janet_dostring(
+			vm.env,
+			cCode,
+			nil,
+			&janetResult,
+		)
+
+		// restore stdout and stderr
+		C.restoreStdout(originalStdoutFd)
+		C.restoreStderr(originalStderrFd)
+
+		// read from stdout/stderr pipes
+		var outBuf, errBuf bytes.Buffer
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 1024)
+			for {
+				n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
+				if n <= 0 {
+					break
+				}
+				outBuf.Write(buf[:n])
+			}
+			C.close(stdoutPipe[0])
+		}()
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 1024)
+			for {
+				n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
+				if n <= 0 {
+					break
+				}
+				errBuf.Write(buf[:n])
+			}
+			C.close(stderrPipe[0])
+		}()
+		wg.Wait()
+
+		// and return the result
+		if ret != C.JANET_SIGNAL_OK {
+			var buffer C.JanetBuffer
+			C.janet_buffer_init(&buffer, 0)
+			C.janet_to_string_b(&buffer, janetResult)
+			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+			C.janet_buffer_deinit(&buffer)
+			resultCh <- result{
+				stdout: outBuf.String(),
+				stderr: errBuf.String(),
+				err:    errors.New(errOutput),
+			}
+			return
+		}
+
+		resultCh <- result{
+			evaluated: janetValueToString(janetResult),
+			stdout:    outBuf.String(),
+			stderr:    errBuf.String(),
+			err:       nil,
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", "", "", ctx.Err()
+	case res := <-resultCh:
+		return res.evaluated, res.stdout, res.stderr, res.err
 	}
-	return janetValueToString(result), outBuf.String(), errBuf.String(), nil
 }
