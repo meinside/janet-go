@@ -3,8 +3,10 @@
 package janet
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestExecuteString tests the ExecuteString function.
@@ -93,7 +95,7 @@ func TestExecuteString(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		output, err := vm.ExecuteString(test.input)
+		output, err := vm.ExecuteString(context.TODO(), test.input)
 		if err != nil {
 			if !strings.Contains(err.Error(), test.expectedErrPattern) {
 				t.Errorf("Expected error pattern '%s', got '%s'", test.expectedErrPattern, err)
@@ -103,6 +105,17 @@ func TestExecuteString(t *testing.T) {
 				t.Errorf("Expected '%s', got '%s'", test.expectedResult, output)
 			}
 		}
+	}
+
+	// (intentional) timedout execution
+	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+	if _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 5)`); err != nil {
+		if !strings.Contains(err.Error(), `context deadline exceeded`) {
+			t.Errorf("Expected timeout error, got '%s'", err)
+		}
+	} else {
+		t.Errorf("Should have failed with context timeout error")
 	}
 }
 
@@ -139,7 +152,7 @@ func TestExecuteStringWithOutput(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result, stdout, stderr, err := vm.ExecuteStringWithOutput(test.input)
+		result, stdout, stderr, err := vm.ExecuteStringWithOutput(context.TODO(), test.input)
 
 		if err != nil {
 			if test.expectedErr == "" {
@@ -162,5 +175,16 @@ func TestExecuteStringWithOutput(t *testing.T) {
 		if stderr != test.expectedStderr {
 			t.Errorf("Input: %s\nExpected stderr: '%s', got: '%s'", test.input, test.expectedStderr, stderr)
 		}
+	}
+
+	// (intentional) timedout execution
+	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
+	defer cancel()
+	if _, _, _, err := vm.ExecuteStringWithOutput(timedoutCtx, `(os/sleep 5)`); err != nil {
+		if !strings.Contains(err.Error(), `context deadline exceeded`) {
+			t.Errorf("Expected timeout error, got '%s'", err)
+		}
+	} else {
+		t.Errorf("Should have failed with context timeout error")
 	}
 }
