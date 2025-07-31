@@ -51,6 +51,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -125,21 +126,24 @@ func (vm *VM) ExecuteString(
 	ctx context.Context,
 	code string,
 ) (string, error) {
+	// suppress error output (redirect to /dev/null)
+	devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
+	defer func() { _ = devNull.Close() }()
+	originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
+
+	// restore stderr
+	defer C.restoreStderr(originalStderrFd)
+
 	type result struct {
 		value string
 		err   error
 	}
 
+	// result channel
 	resultCh := make(chan result, 1)
 
 	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
-		// suppress error output (redirect to /dev/null)
-		devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
-		defer func() { _ = devNull.Close() }()
-		originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
-		defer C.restoreStderr(originalStderrFd)
-
 		// run janet code,
 		cCode := C.CString(code)
 		defer C.free(unsafe.Pointer(cCode))
@@ -193,6 +197,10 @@ func (vm *VM) ExecuteStringWithOutput(
 
 	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
+		// NOTE: for preventing `exit status 2`
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		// create pipes for stdout and stderr
 		var stdoutPipe [2]C.int
 		var stderrPipe [2]C.int
@@ -204,25 +212,6 @@ func (vm *VM) ExecuteStringWithOutput(
 			resultCh <- result{err: errors.New("failed to create stderr pipe")}
 			return
 		}
-
-		// redirect stdout and stderr
-		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
-		originalStderrFd := C.redirectStderr(stderrPipe[1])
-
-		// run janet code,
-		cCode := C.CString(code)
-		defer C.free(unsafe.Pointer(cCode))
-		var janetResult C.Janet
-		ret := C.janet_dostring(
-			vm.env,
-			cCode,
-			nil,
-			&janetResult,
-		)
-
-		// restore stdout and stderr
-		C.restoreStdout(originalStdoutFd)
-		C.restoreStderr(originalStderrFd)
 
 		// read from stdout/stderr pipes
 		var outBuf, errBuf bytes.Buffer
@@ -252,6 +241,30 @@ func (vm *VM) ExecuteStringWithOutput(
 			}
 			C.close(stderrPipe[0])
 		}()
+
+		// redirect stdout and stderr
+		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
+		originalStderrFd := C.redirectStderr(stderrPipe[1])
+
+		// run janet code,
+		cCode := C.CString(code)
+		defer C.free(unsafe.Pointer(cCode))
+		var janetResult C.Janet
+		ret := C.janet_dostring(
+			vm.env,
+			cCode,
+			nil,
+			&janetResult,
+		)
+
+		// restore stdout and stderr
+		C.restoreStdout(originalStdoutFd)
+		C.restoreStderr(originalStderrFd)
+
+		// close write ends of pipes
+		C.close(stdoutPipe[1])
+		C.close(stderrPipe[1])
+
 		wg.Wait()
 
 		// and return the result
