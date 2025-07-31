@@ -49,7 +49,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -61,7 +60,6 @@ var _sharedVM *VM
 // vmRequest is used to send a job to the VM handler goroutine.
 type vmRequest struct {
 	code         string
-	withOutput   bool
 	responseChan chan vmResponse
 }
 
@@ -139,101 +137,79 @@ func SharedVM() (vm *VM, err error) {
 
 // handleVMRequest runs the janet code within the dedicated VM thread.
 // This function should only be called from the VM handler goroutine.
-func handleVMRequest(env *C.JanetTable, req vmRequest) {
+func handleVMRequest(
+	env *C.JanetTable,
+	req vmRequest,
+) {
 	var janetResult C.Janet
 	var ret C.int
 
 	cCode := C.CString(req.code)
 	defer C.free(unsafe.Pointer(cCode))
 
-	if req.withOutput {
-		// create pipes for stdout and stderr
-		var stdoutPipe [2]C.int
-		var stderrPipe [2]C.int
-		if C.pipe(&stdoutPipe[0]) != 0 {
-			req.responseChan <- vmResponse{err: errors.New("failed to create stdout pipe")}
-			return
+	// create pipes for stdout and stderr
+	var stdoutPipe [2]C.int
+	var stderrPipe [2]C.int
+	if C.pipe(&stdoutPipe[0]) != 0 {
+		req.responseChan <- vmResponse{err: errors.New("failed to create stdout pipe")}
+		return
+	}
+	if C.pipe(&stderrPipe[0]) != 0 {
+		req.responseChan <- vmResponse{err: errors.New("failed to create stderr pipe")}
+		return
+	}
+
+	// redirect stdout and stderr
+	originalStdoutFd := C.redirectStdout(stdoutPipe[1])
+	originalStderrFd := C.redirectStderr(stderrPipe[1])
+
+	// run janet code
+	ret = C.janet_dostring(env, cCode, nil, &janetResult)
+
+	// restore stdout and stderr
+	C.restoreStdout(originalStdoutFd)
+	C.restoreStderr(originalStderrFd)
+
+	// read all output from pipes
+	var outBuf, errBuf bytes.Buffer
+	buf := make([]byte, 1024)
+	for {
+		n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
+		if n <= 0 {
+			break
 		}
-		if C.pipe(&stderrPipe[0]) != 0 {
-			req.responseChan <- vmResponse{err: errors.New("failed to create stderr pipe")}
-			return
+		outBuf.Write(buf[:n])
+	}
+	for {
+		n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
+		if n <= 0 {
+			break
 		}
+		errBuf.Write(buf[:n])
+	}
+	C.close(stdoutPipe[0])
+	C.close(stderrPipe[0])
 
-		// redirect stdout and stderr
-		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
-		originalStderrFd := C.redirectStderr(stderrPipe[1])
-
-		// run janet code
-		ret = C.janet_dostring(env, cCode, nil, &janetResult)
-
-		// restore stdout and stderr
-		C.restoreStdout(originalStdoutFd)
-		C.restoreStderr(originalStderrFd)
-
-		// read all output from pipes
-		var outBuf, errBuf bytes.Buffer
-		buf := make([]byte, 1024)
-		for {
-			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			outBuf.Write(buf[:n])
-		}
-		for {
-			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			errBuf.Write(buf[:n])
-		}
-		C.close(stdoutPipe[0])
-		C.close(stderrPipe[0])
-
-		// and return the result
-		if ret != C.JANET_SIGNAL_OK {
-			var buffer C.JanetBuffer
-			C.janet_buffer_init(&buffer, 0)
-			C.janet_to_string_b(&buffer, janetResult)
-			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-			C.janet_buffer_deinit(&buffer)
-			req.responseChan <- vmResponse{
-				stdout: outBuf.String(),
-				stderr: errBuf.String(),
-				err:    errors.New(errOutput),
-			}
-			return
-		}
-
+	// and return the result
+	if ret != C.JANET_SIGNAL_OK {
+		var buffer C.JanetBuffer
+		C.janet_buffer_init(&buffer, 0)
+		C.janet_to_string_b(&buffer, janetResult)
+		errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+		C.janet_buffer_deinit(&buffer)
 		req.responseChan <- vmResponse{
-			evaluated: janetValueToString(janetResult),
-			stdout:    outBuf.String(),
-			stderr:    errBuf.String(),
-			err:       nil,
+			stdout: outBuf.String(),
+			stderr: errBuf.String(),
+			err:    errors.New(errOutput),
 		}
-	} else { // Not withOutput
-		// suppress error output (redirect to /dev/null)
-		devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
-		defer func() { _ = devNull.Close() }()
-		originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
+		return
+	}
 
-		// restore stderr
-		defer C.restoreStderr(originalStderrFd)
-
-		// run janet code
-		ret = C.janet_dostring(env, cCode, nil, &janetResult)
-
-		// and return the result
-		if ret != C.JANET_SIGNAL_OK {
-			var buffer C.JanetBuffer
-			C.janet_buffer_init(&buffer, 0)
-			C.janet_to_string_b(&buffer, janetResult)
-			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-			C.janet_buffer_deinit(&buffer)
-			req.responseChan <- vmResponse{err: errors.New(errOutput)}
-			return
-		}
-		req.responseChan <- vmResponse{evaluated: janetValueToString(janetResult), err: nil}
+	req.responseChan <- vmResponse{
+		evaluated: janetValueToString(janetResult),
+		stdout:    outBuf.String(),
+		stderr:    errBuf.String(),
+		err:       nil,
 	}
 }
 
@@ -291,35 +267,8 @@ func janetValueToString(value C.Janet) string {
 	}
 }
 
-// ExecuteString executes a Janet string and returns the result.
+// ExecuteString executes a Janet `code` and returns the evaluated result, along with any output to stdout and stderr.
 func (vm *VM) ExecuteString(
-	ctx context.Context,
-	code string,
-) (string, error) {
-	responseChan := make(chan vmResponse, 1)
-	req := vmRequest{
-		code:         code,
-		withOutput:   false,
-		responseChan: responseChan,
-	}
-
-	select {
-	case vm.requestChan <- req:
-		// request sent
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-
-	select {
-	case res := <-responseChan:
-		return res.evaluated, res.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
-// ExecuteStringWithOutput executes a Janet string and returns the result, along with any output to stdout and stderr.
-func (vm *VM) ExecuteStringWithOutput(
 	ctx context.Context,
 	code string,
 ) (
@@ -331,7 +280,6 @@ func (vm *VM) ExecuteStringWithOutput(
 	responseChan := make(chan vmResponse, 1)
 	req := vmRequest{
 		code:         code,
-		withOutput:   true,
 		responseChan: responseChan,
 	}
 
@@ -349,4 +297,3 @@ func (vm *VM) ExecuteStringWithOutput(
 		return "", "", "", ctx.Err()
 	}
 }
-

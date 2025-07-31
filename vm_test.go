@@ -18,8 +18,11 @@ func TestExecuteString(t *testing.T) {
 	defer vm.Close()
 
 	tests := []struct {
-		input              string
-		expectedResult     string
+		input string
+
+		expectedEvaluated  string
+		expectedStdout     string
+		expectedStderr     string
 		expectedErrPattern string
 	}{
 		////////////////////////////////
@@ -27,56 +30,56 @@ func TestExecuteString(t *testing.T) {
 		//
 		// (arithmetic)
 		{
-			input:          `(+ 1 2 3)`,
-			expectedResult: `6`,
+			input:             `(+ 1 2 3)`,
+			expectedEvaluated: `6`,
 		},
 		{
-			input:          `(/ 42 10.0)`,
-			expectedResult: `4.2`,
+			input:             `(/ 42 10.0)`,
+			expectedEvaluated: `4.2`,
 		},
 		{
-			input:          `(/ 1 0)`,
-			expectedResult: `inf`,
+			input:             `(/ 1 0)`,
+			expectedEvaluated: `inf`,
 		},
 		// (integers and floats)
 		{
-			input:          `100`,
-			expectedResult: `100`,
+			input:             `100`,
+			expectedEvaluated: `100`,
 		},
 		{
-			input:          `3.14`,
-			expectedResult: `3.14`,
+			input:             `3.14`,
+			expectedEvaluated: `3.14`,
 		},
 		{
-			input:          `-2.718`,
-			expectedResult: `-2.718`,
+			input:             `-2.718`,
+			expectedEvaluated: `-2.718`,
 		},
 		{
-			input:          `10.000000`,
-			expectedResult: `10`,
+			input:             `10.000000`,
+			expectedEvaluated: `10`,
 		},
 		// (function declaration and call)
 		{
-			input:          `(defn add [x y] (+ x y))`,
-			expectedResult: `<function add>`,
+			input:             `(defn add [x y] (+ x y))`,
+			expectedEvaluated: `<function add>`,
 		},
 		{
-			input:          `(add 1 2)`,
-			expectedResult: `3`,
+			input:             `(add 1 2)`,
+			expectedEvaluated: `3`,
 		},
 		// (tuples)
 		{
-			input:          `'(1 2 3)`,
-			expectedResult: `(1 2 3)`,
+			input:             `'(1 2 3)`,
+			expectedEvaluated: `(1 2 3)`,
 		},
 		{
-			input:          `'(1 2 (3 4) 5)`,
-			expectedResult: `(1 2 (3 4) 5)`,
+			input:             `'(1 2 (3 4) 5)`,
+			expectedEvaluated: `(1 2 (3 4) 5)`,
 		},
 		// (nil)
 		{
-			input:          `nil`,
-			expectedResult: `nil`,
+			input:             `nil`,
+			expectedEvaluated: `nil`,
 		},
 
 		////////////////////////////////
@@ -92,95 +95,62 @@ func TestExecuteString(t *testing.T) {
 			input:              `(no-such-func 1 2 3)`,
 			expectedErrPattern: `unknown symbol`,
 		},
+
+		// (standard out/err)
+		{
+			input:             `(print "hello to stdout") (eprint "hello to stderr") "hello"`,
+			expectedEvaluated: `hello`,
+			expectedStdout:    "hello to stdout\n",
+			expectedStderr:    "hello to stderr\n",
+		},
+		{
+			input: `(error "intentional")`,
+			expectedStderr: `error: intentional
+  in thunk pc=1
+`,
+			expectedErrPattern: "intentional",
+		},
 	}
 
 	for _, test := range tests {
-		output, err := vm.ExecuteString(context.TODO(), test.input)
-		if err != nil {
-			if !strings.Contains(err.Error(), test.expectedErrPattern) {
-				t.Errorf("Expected error pattern '%s', got '%s'", test.expectedErrPattern, err)
-			}
-		} else {
-			if output != test.expectedResult {
-				t.Errorf("Expected '%s', got '%s'", test.expectedResult, output)
-			}
-		}
-	}
+		result, stdout, stderr, err := vm.ExecuteString(context.TODO(), test.input)
 
-	// (intentional) timedout execution
-	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
-	defer cancel()
-	if _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 3)`); err != nil {
-		if !strings.Contains(err.Error(), `context deadline exceeded`) {
-			t.Errorf("Expected timeout error, got '%s'", err)
+		if err != nil {
+			if test.expectedErrPattern == "" {
+				t.Errorf("Unexpected error: %v", err)
+			} else if !strings.Contains(err.Error(), test.expectedErrPattern) {
+				t.Errorf("Expected error containing '%s', got '%s'", test.expectedErrPattern, err.Error())
+			}
+		} else if test.expectedErrPattern != "" {
+			t.Errorf("Expected error containing '%s', but got none", test.expectedErrPattern)
 		}
-	} else {
-		t.Errorf("Should have failed with context timeout error")
+
+		if test.expectedEvaluated != "" && result != test.expectedEvaluated {
+			t.Errorf("Input: %s\nExpected result: '%s', got: '%s'", test.input, test.expectedEvaluated, result)
+		}
+
+		if test.expectedStdout != "" && stdout != test.expectedStdout {
+			t.Errorf("Input: %s\nExpected stdout: '%s', got: '%s'", test.input, test.expectedStdout, stdout)
+		}
+
+		if test.expectedStderr != "" && stderr != test.expectedStderr {
+			t.Errorf("Input: %s\nExpected stderr: '%s', got: '%s'", test.input, test.expectedStderr, stderr)
+		}
 	}
 }
 
-// TestExecuteStringWithOutput tests the ExecuteStringWithOutput function.
-func TestExecuteStringWithOutput(t *testing.T) {
+// TestTimedoutExecuteString tests the ExecuteString function which times out.
+func TestTimedoutExecuteString(t *testing.T) {
 	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
 	}
 	defer vm.Close()
 
-	tests := []struct {
-		input          string
-		expectedResult string
-		expectedStdout string
-		expectedStderr string
-		expectedErr    string
-	}{
-		{
-			input:          `(print "hello to stdout") (eprint "hello to stderr") "hello"`,
-			expectedResult: `hello`,
-			expectedStdout: "hello to stdout\n",
-			expectedStderr: "hello to stderr\n",
-		},
-		{
-			input:          `(error "intentional")`,
-			expectedResult: "",
-			expectedStdout: "",
-			expectedStderr: `error: intentional
-  in thunk pc=1
-`,
-			expectedErr: "intentional",
-		},
-	}
-
-	for _, test := range tests {
-		result, stdout, stderr, err := vm.ExecuteStringWithOutput(context.TODO(), test.input)
-
-		if err != nil {
-			if test.expectedErr == "" {
-				t.Errorf("Unexpected error: %v", err)
-			} else if !strings.Contains(err.Error(), test.expectedErr) {
-				t.Errorf("Expected error containing '%s', got '%s'", test.expectedErr, err.Error())
-			}
-		} else if test.expectedErr != "" {
-			t.Errorf("Expected error '%s', but got none", test.expectedErr)
-		}
-
-		if result != test.expectedResult {
-			t.Errorf("Input: %s\nExpected result: '%s', got: '%s'", test.input, test.expectedResult, result)
-		}
-
-		if stdout != test.expectedStdout {
-			t.Errorf("Input: %s\nExpected stdout: '%s', got: '%s'", test.input, test.expectedStdout, stdout)
-		}
-
-		if stderr != test.expectedStderr {
-			t.Errorf("Input: %s\nExpected stderr: '%s', got: '%s'", test.input, test.expectedStderr, stderr)
-		}
-	}
-
 	// (intentional) timedout execution
 	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	if _, _, _, err := vm.ExecuteStringWithOutput(timedoutCtx, `(os/sleep 3)`); err != nil {
+	if _, _, _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 3)`); err != nil {
 		if !strings.Contains(err.Error(), `context deadline exceeded`) {
 			t.Errorf("Expected timeout error, got '%s'", err)
 		}

@@ -16,6 +16,7 @@ go get -u github.com/meinside/janet-go
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -29,28 +30,30 @@ func main() {
 	}
 	defer vm.Close()
 
+	ctx := context.TODO()
+
 	// Execute a simple expression
-	output, err := vm.ExecuteString("(+ 1 2 3)")
+	output, _, _, err := vm.ExecuteString(ctx, "(+ 1 2 3)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 	fmt.Println(output) // Output: 6
 
 	// Define a function
-	_, err = vm.ExecuteString("(defn add [x y] (+ x y))")
+	_, _, _, err = vm.ExecuteString(ctx, "(defn add [x y] (+ x y))")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 
 	// and call that function
-	output, err = vm.ExecuteString("(add 10 20)")
+	output, _, _, err = vm.ExecuteString(ctx, "(add 10 20)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 	fmt.Println(output) // Output: 30
 
 	// Execute a malformed expression (that will lead to an error)
-	_, err = vm.ExecuteString("(malformed expression")
+	_, _, _, err = vm.ExecuteString(ctx, "(malformed expression")
 	if err != nil {
 		fmt.Println(err) // Output: unexpected end of source, ( opened at line 1, column 1
 	}
