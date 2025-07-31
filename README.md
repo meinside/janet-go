@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	vm, err := janet.NewVM()
+	vm, err := janet.SharedVM()
 	if err != nil {
 		log.Fatalf("Failed to create Janet VM: %v", err)
 	}
