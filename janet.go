@@ -220,7 +220,7 @@ func (vm *VM) ExecuteStringWithOutput(
 
 	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
-		// for preventing `exit status 2`
+		// All CGO calls must run on a single, locked OS thread.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -235,43 +235,6 @@ func (vm *VM) ExecuteStringWithOutput(
 			resultCh <- result{err: errors.New("failed to create stderr pipe")}
 			return
 		}
-
-		// read from stdout/stderr pipes
-		var outBuf, errBuf bytes.Buffer
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			// for preventing `exit status 2`
-			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-
-			defer wg.Done()
-			buf := make([]byte, 1024)
-			for {
-				n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
-				if n <= 0 {
-					break
-				}
-				outBuf.Write(buf[:n])
-			}
-			C.close(stdoutPipe[0])
-		}()
-		go func() {
-			// for preventing `exit status 2`
-			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-
-			defer wg.Done()
-			buf := make([]byte, 1024)
-			for {
-				n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
-				if n <= 0 {
-					break
-				}
-				errBuf.Write(buf[:n])
-			}
-			C.close(stderrPipe[0])
-		}()
 
 		// redirect stdout and stderr
 		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
@@ -292,11 +255,29 @@ func (vm *VM) ExecuteStringWithOutput(
 		C.restoreStdout(originalStdoutFd)
 		C.restoreStderr(originalStderrFd)
 
-		// close write ends of pipes
+		// close write ends of pipes to signal EOF to readers
 		C.close(stdoutPipe[1])
 		C.close(stderrPipe[1])
 
-		wg.Wait()
+		// read all output from pipes sequentially in the same thread
+		var outBuf, errBuf bytes.Buffer
+		buf := make([]byte, 1024)
+		for {
+			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			outBuf.Write(buf[:n])
+		}
+		for {
+			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			errBuf.Write(buf[:n])
+		}
+		C.close(stdoutPipe[0])
+		C.close(stderrPipe[0])
 
 		// and return the result
 		if ret != C.JANET_SIGNAL_OK {
