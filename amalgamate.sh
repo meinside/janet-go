@@ -2,9 +2,9 @@
 #
 # amalgamate.sh
 #
-# This script ensures the Janet source is present and builds the amalgamated janet.h/c file.
+# This script generates amalgamated janet.c and its header files from Janet repository.
 #
-# (will be run by CGO)
+# last update: 2025.07.31.
 
 set -euo pipefail
 
@@ -12,6 +12,7 @@ set -euo pipefail
 JANET_VERSION="v1.38.0"
 
 JANET_DIR="vendor/janet"
+AMALGAMATED_DIR="amalgamated"
 
 echo "Ensuring Janet source is available and building janet.c..."
 
@@ -38,10 +39,10 @@ cd "$JANET_DIR"
 make build/c/janet.c # This target builds the amalgamated janet.c
 cd -
 
-# Copy the generated janet.c to the current directory for cgo
-mkdir -p amalgamated
-cp "$JANET_DIR/build/c/janet.c" amalgamated/janet.c
-cp "$JANET_DIR/src/include/janet.h" amalgamated/janet.h
-cp "$JANET_DIR/src/conf/janetconf.h" amalgamated/janetconf.h
+# Copy the generated janet.c and header files to the $AMALGAMTED_DIR directory for cgo
+mkdir -p "$AMALGAMATED_DIR"
+cp "$JANET_DIR/build/c/janet.c" "$AMALGAMATED_DIR/janet.c"
+cp "$JANET_DIR/src/include/janet.h" "$AMALGAMATED_DIR/janet.h"
+cp "$JANET_DIR/src/conf/janetconf.h" "$AMALGAMATED_DIR/janetconf.h"
 
-echo "Finished generating amalgamated/janet.h and amalgamated/janet.c."
+echo "Finished generating amalgamated files in directory: $AMALGAMATED_DIR"

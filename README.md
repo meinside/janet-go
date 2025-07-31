@@ -61,11 +61,9 @@ func main() {
 
 ### Amalgamation
 
-`amalgamated/janet.h` and `amalgamated/janet.c` are generated from the [source code](https://github.com/janet-lang/janet) with `amalgamate.sh`.
+`amalgamated/janet.c`, `amalgamated/janet.h`, and `amalgamated/janetconf.h` are generated from the [source code](https://github.com/janet-lang/janet) with `amalgamate.sh`.
 
 They need to be updated when there is a new release of Janet.
-
-`amalgamate.sh` is also used by `//go:generate` in `janet.go` file.
 
 For clearing files compiled by cgo, run `go clean -cache`.
 

@@ -134,6 +134,7 @@ func TestExecuteStringWithOutput(t *testing.T) {
 		expectedStderr string
 		expectedErr    string
 	}{
+		// FIXME: fails often with `exit status 2`
 		{
 			input:          `(print "hello to stdout") (eprint "hello to stderr") "hello"`,
 			expectedResult: `hello`,
