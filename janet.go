@@ -49,31 +49,46 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"runtime"
 	"sync"
 	"unsafe"
 )
 
+var (
+	_initializeOnce sync.Once
+	_sharedVM       *VM
+)
+
 // VM represents a Janet virtual machine instance.
 type VM struct {
+	mu sync.Mutex
+
 	env *C.JanetTable
 }
 
-// NewVM initializes a new Janet VM.
-func NewVM() (*VM, error) {
-	C.janet_init()
-	env := C.janet_core_env(nil)
-	if env == nil {
-		return nil, fmt.Errorf("failed to create janet environment")
+// SharedVM initializes and returns a new shared Janet VM.
+func SharedVM() (vm *VM, err error) {
+	if _sharedVM == nil {
+		// initialize,
+		C.janet_init()
+
+		// and create a new VM
+		if env := C.janet_core_env(nil); env == nil {
+			err = errors.New("failed to create janet environment")
+		} else {
+			_sharedVM = &VM{env: env}
+		}
 	}
-	return &VM{env: env}, nil
+	return _sharedVM, err
 }
 
 // Close deinitializes the Janet VM.
 func (vm *VM) Close() {
-	C.janet_deinit()
+	if _sharedVM != nil {
+		C.janet_deinit()
+		_sharedVM = nil
+	}
 }
 
 // janetValueToString converts a Janet value to its string representation.
@@ -126,6 +141,9 @@ func (vm *VM) ExecuteString(
 	ctx context.Context,
 	code string,
 ) (string, error) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+
 	// suppress error output (redirect to /dev/null)
 	devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
 	defer func() { _ = devNull.Close() }()
@@ -144,6 +162,10 @@ func (vm *VM) ExecuteString(
 
 	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
+		// for preventing `exit status 2`
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+
 		// run janet code,
 		cCode := C.CString(code)
 		defer C.free(unsafe.Pointer(cCode))
@@ -186,6 +208,9 @@ func (vm *VM) ExecuteStringWithOutput(
 	stderr string,
 	err error,
 ) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+
 	type result struct {
 		evaluated string
 		stdout    string
@@ -197,7 +222,7 @@ func (vm *VM) ExecuteStringWithOutput(
 
 	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
 	go func() {
-		// NOTE: for preventing `exit status 2`
+		// for preventing `exit status 2`
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -218,6 +243,10 @@ func (vm *VM) ExecuteStringWithOutput(
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
+			// for preventing `exit status 2`
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+
 			defer wg.Done()
 			buf := make([]byte, 1024)
 			for {
@@ -230,6 +259,10 @@ func (vm *VM) ExecuteStringWithOutput(
 			C.close(stdoutPipe[0])
 		}()
 		go func() {
+			// for preventing `exit status 2`
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+
 			defer wg.Done()
 			buf := make([]byte, 1024)
 			for {

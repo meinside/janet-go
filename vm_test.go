@@ -11,7 +11,7 @@ import (
 
 // TestExecuteString tests the ExecuteString function.
 func TestExecuteString(t *testing.T) {
-	vm, err := NewVM()
+	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestExecuteString(t *testing.T) {
 
 // TestExecuteStringWithOutput tests the ExecuteStringWithOutput function.
 func TestExecuteStringWithOutput(t *testing.T) {
-	vm, err := NewVM()
+	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
 	}
