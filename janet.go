@@ -55,10 +55,8 @@ import (
 	"unsafe"
 )
 
-var (
-	_initializeOnce sync.Once
-	_sharedVM       *VM
-)
+// shared VM
+var _sharedVM *VM
 
 // VM represents a Janet virtual machine instance.
 type VM struct {
