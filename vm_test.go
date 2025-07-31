@@ -110,7 +110,7 @@ func TestExecuteString(t *testing.T) {
 	// (intentional) timedout execution
 	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	if _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 5)`); err != nil {
+	if _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 3)`); err != nil {
 		if !strings.Contains(err.Error(), `context deadline exceeded`) {
 			t.Errorf("Expected timeout error, got '%s'", err)
 		}
@@ -180,7 +180,7 @@ func TestExecuteStringWithOutput(t *testing.T) {
 	// (intentional) timedout execution
 	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	if _, _, _, err := vm.ExecuteStringWithOutput(timedoutCtx, `(os/sleep 5)`); err != nil {
+	if _, _, _, err := vm.ExecuteStringWithOutput(timedoutCtx, `(os/sleep 3)`); err != nil {
 		if !strings.Contains(err.Error(), `context deadline exceeded`) {
 			t.Errorf("Expected timeout error, got '%s'", err)
 		}
