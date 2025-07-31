@@ -58,33 +58,190 @@ import (
 // shared VM
 var _sharedVM *VM
 
+// vmRequest is used to send a job to the VM handler goroutine.
+type vmRequest struct {
+	code         string
+	withOutput   bool
+	responseChan chan vmResponse
+}
+
+// vmResponse is used to receive the result from the VM handler.
+type vmResponse struct {
+	evaluated string
+	stdout    string
+	stderr    string
+	err       error
+}
+
 // VM represents a Janet virtual machine instance.
 type VM struct {
-	mu sync.Mutex
-
-	env *C.JanetTable
+	requestChan  chan vmRequest
+	shutdownChan chan struct{}
+	wg           sync.WaitGroup
 }
 
 // SharedVM initializes and returns a new shared Janet VM.
+// It starts a dedicated OS-thread-locked goroutine to handle all CGo calls
+// sequentially, ensuring thread safety.
 func SharedVM() (vm *VM, err error) {
-	if _sharedVM == nil {
-		// initialize,
-		C.janet_init()
-
-		// and create a new VM
-		if env := C.janet_core_env(nil); env == nil {
-			err = errors.New("failed to create janet environment")
-		} else {
-			_sharedVM = &VM{env: env}
-		}
+	if _sharedVM != nil {
+		return _sharedVM, nil
 	}
-	return _sharedVM, err
+
+	initDone := make(chan error, 1)
+
+	requestChan := make(chan vmRequest)
+	shutdownChan := make(chan struct{})
+
+	vm = &VM{
+		requestChan:  requestChan,
+		shutdownChan: shutdownChan,
+	}
+	vm.wg.Add(1)
+
+	// The dedicated VM handler goroutine
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer vm.wg.Done()
+
+		C.janet_init()
+		defer C.janet_deinit()
+
+		env := C.janet_core_env(nil)
+		if env == nil {
+			initDone <- errors.New("failed to create janet environment")
+			return
+		}
+		close(initDone) // Signal successful initialization
+
+		// Main loop to process requests
+		for {
+			select {
+			case req := <-requestChan:
+				handleVMRequest(env, req)
+			case <-shutdownChan:
+				return
+			}
+		}
+	}()
+
+	// Wait for initialization to complete
+	err = <-initDone
+	if err != nil {
+		vm.wg.Wait() // Ensure the goroutine has exited
+		return nil, err
+	}
+
+	_sharedVM = vm
+	return _sharedVM, nil
+}
+
+// handleVMRequest runs the janet code within the dedicated VM thread.
+// This function should only be called from the VM handler goroutine.
+func handleVMRequest(env *C.JanetTable, req vmRequest) {
+	var janetResult C.Janet
+	var ret C.int
+
+	cCode := C.CString(req.code)
+	defer C.free(unsafe.Pointer(cCode))
+
+	if req.withOutput {
+		// create pipes for stdout and stderr
+		var stdoutPipe [2]C.int
+		var stderrPipe [2]C.int
+		if C.pipe(&stdoutPipe[0]) != 0 {
+			req.responseChan <- vmResponse{err: errors.New("failed to create stdout pipe")}
+			return
+		}
+		if C.pipe(&stderrPipe[0]) != 0 {
+			req.responseChan <- vmResponse{err: errors.New("failed to create stderr pipe")}
+			return
+		}
+
+		// redirect stdout and stderr
+		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
+		originalStderrFd := C.redirectStderr(stderrPipe[1])
+
+		// run janet code
+		ret = C.janet_dostring(env, cCode, nil, &janetResult)
+
+		// restore stdout and stderr
+		C.restoreStdout(originalStdoutFd)
+		C.restoreStderr(originalStderrFd)
+
+		// read all output from pipes
+		var outBuf, errBuf bytes.Buffer
+		buf := make([]byte, 1024)
+		for {
+			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			outBuf.Write(buf[:n])
+		}
+		for {
+			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
+			if n <= 0 {
+				break
+			}
+			errBuf.Write(buf[:n])
+		}
+		C.close(stdoutPipe[0])
+		C.close(stderrPipe[0])
+
+		// and return the result
+		if ret != C.JANET_SIGNAL_OK {
+			var buffer C.JanetBuffer
+			C.janet_buffer_init(&buffer, 0)
+			C.janet_to_string_b(&buffer, janetResult)
+			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+			C.janet_buffer_deinit(&buffer)
+			req.responseChan <- vmResponse{
+				stdout: outBuf.String(),
+				stderr: errBuf.String(),
+				err:    errors.New(errOutput),
+			}
+			return
+		}
+
+		req.responseChan <- vmResponse{
+			evaluated: janetValueToString(janetResult),
+			stdout:    outBuf.String(),
+			stderr:    errBuf.String(),
+			err:       nil,
+		}
+	} else { // Not withOutput
+		// suppress error output (redirect to /dev/null)
+		devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
+		defer func() { _ = devNull.Close() }()
+		originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
+
+		// restore stderr
+		defer C.restoreStderr(originalStderrFd)
+
+		// run janet code
+		ret = C.janet_dostring(env, cCode, nil, &janetResult)
+
+		// and return the result
+		if ret != C.JANET_SIGNAL_OK {
+			var buffer C.JanetBuffer
+			C.janet_buffer_init(&buffer, 0)
+			C.janet_to_string_b(&buffer, janetResult)
+			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
+			C.janet_buffer_deinit(&buffer)
+			req.responseChan <- vmResponse{err: errors.New(errOutput)}
+			return
+		}
+		req.responseChan <- vmResponse{evaluated: janetValueToString(janetResult), err: nil}
+	}
 }
 
 // Close deinitializes the Janet VM.
 func (vm *VM) Close() {
 	if _sharedVM != nil {
-		C.janet_deinit()
+		close(vm.shutdownChan)
+		vm.wg.Wait()
 		_sharedVM = nil
 	}
 }
@@ -139,60 +296,25 @@ func (vm *VM) ExecuteString(
 	ctx context.Context,
 	code string,
 ) (string, error) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	// suppress error output (redirect to /dev/null)
-	devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0755)
-	defer func() { _ = devNull.Close() }()
-	originalStderrFd := C.redirectStderr(C.int(devNull.Fd()))
-
-	// restore stderr
-	defer C.restoreStderr(originalStderrFd)
-
-	type result struct {
-		value string
-		err   error
+	responseChan := make(chan vmResponse, 1)
+	req := vmRequest{
+		code:         code,
+		withOutput:   false,
+		responseChan: responseChan,
 	}
 
-	// result channel
-	resultCh := make(chan result, 1)
-
-	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
-	go func() {
-		// for preventing `exit status 2`
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-
-		// run janet code,
-		cCode := C.CString(code)
-		defer C.free(unsafe.Pointer(cCode))
-		var janetResult C.Janet
-		ret := C.janet_dostring(
-			vm.env,
-			cCode,
-			nil,
-			&janetResult,
-		)
-
-		// and return the result
-		if ret != C.JANET_SIGNAL_OK {
-			var buffer C.JanetBuffer
-			C.janet_buffer_init(&buffer, 0)
-			C.janet_to_string_b(&buffer, janetResult)
-			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-			C.janet_buffer_deinit(&buffer)
-			resultCh <- result{value: "", err: errors.New(errOutput)}
-			return
-		}
-		resultCh <- result{value: janetValueToString(janetResult), err: nil}
-	}()
-
 	select {
+	case vm.requestChan <- req:
+		// request sent
 	case <-ctx.Done():
 		return "", ctx.Err()
-	case res := <-resultCh:
-		return res.value, res.err
+	}
+
+	select {
+	case res := <-responseChan:
+		return res.evaluated, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }
 
@@ -206,106 +328,25 @@ func (vm *VM) ExecuteStringWithOutput(
 	stderr string,
 	err error,
 ) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
-
-	type result struct {
-		evaluated string
-		stdout    string
-		stderr    string
-		err       error
+	responseChan := make(chan vmResponse, 1)
+	req := vmRequest{
+		code:         code,
+		withOutput:   true,
+		responseChan: responseChan,
 	}
-
-	resultCh := make(chan result, 1)
-
-	// FIXME: need a way of stopping/interrupting `C.janet_dostring()`
-	go func() {
-		// All CGO calls must run on a single, locked OS thread.
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-
-		// create pipes for stdout and stderr
-		var stdoutPipe [2]C.int
-		var stderrPipe [2]C.int
-		if C.pipe(&stdoutPipe[0]) != 0 {
-			resultCh <- result{err: errors.New("failed to create stdout pipe")}
-			return
-		}
-		if C.pipe(&stderrPipe[0]) != 0 {
-			resultCh <- result{err: errors.New("failed to create stderr pipe")}
-			return
-		}
-
-		// redirect stdout and stderr
-		originalStdoutFd := C.redirectStdout(stdoutPipe[1])
-		originalStderrFd := C.redirectStderr(stderrPipe[1])
-
-		// run janet code,
-		cCode := C.CString(code)
-		defer C.free(unsafe.Pointer(cCode))
-		var janetResult C.Janet
-		ret := C.janet_dostring(
-			vm.env,
-			cCode,
-			nil,
-			&janetResult,
-		)
-
-		// restore stdout and stderr
-		C.restoreStdout(originalStdoutFd)
-		C.restoreStderr(originalStderrFd)
-
-		// close write ends of pipes to signal EOF to readers
-		C.close(stdoutPipe[1])
-		C.close(stderrPipe[1])
-
-		// read all output from pipes sequentially in the same thread
-		var outBuf, errBuf bytes.Buffer
-		buf := make([]byte, 1024)
-		for {
-			n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			outBuf.Write(buf[:n])
-		}
-		for {
-			n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
-			if n <= 0 {
-				break
-			}
-			errBuf.Write(buf[:n])
-		}
-		C.close(stdoutPipe[0])
-		C.close(stderrPipe[0])
-
-		// and return the result
-		if ret != C.JANET_SIGNAL_OK {
-			var buffer C.JanetBuffer
-			C.janet_buffer_init(&buffer, 0)
-			C.janet_to_string_b(&buffer, janetResult)
-			errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
-			C.janet_buffer_deinit(&buffer)
-			resultCh <- result{
-				stdout: outBuf.String(),
-				stderr: errBuf.String(),
-				err:    errors.New(errOutput),
-			}
-			return
-		}
-
-		resultCh <- result{
-			evaluated: janetValueToString(janetResult),
-			stdout:    outBuf.String(),
-			stderr:    errBuf.String(),
-			err:       nil,
-		}
-	}()
 
 	select {
+	case vm.requestChan <- req:
+		// request sent
 	case <-ctx.Done():
 		return "", "", "", ctx.Err()
-	case res := <-resultCh:
+	}
+
+	select {
+	case res := <-responseChan:
 		return res.evaluated, res.stdout, res.stderr, res.err
+	case <-ctx.Done():
+		return "", "", "", ctx.Err()
 	}
 }
+
