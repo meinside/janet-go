@@ -70,3 +70,7 @@ They need to be updated when there is a new release of Janet.
 
 For clearing files compiled by cgo, run `go clean -cache`.
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
