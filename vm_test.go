@@ -215,7 +215,7 @@ func TestParseJanetString(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		value, err := vm.ParseJanetString(context.TODO(), test.input)
+		value, err := vm.ParseToValue(context.TODO(), test.input)
 		if err != nil {
 			t.Errorf("ParseJanetString failed for input '%s': %v", test.input, err)
 		}

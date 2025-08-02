@@ -61,15 +61,15 @@ import (
 // shared VM
 var _sharedVM *VM
 
-// vmRequest is used to send a job to the VM handler goroutine.
-type vmRequest struct {
-	code         string
-	responseChan chan vmResponse
+// vmExecRequest is used to send a execution job to the VM handler goroutine.
+type vmExecRequest struct {
+	expression   string // janet expression
+	responseChan chan vmExecResponse
 }
 
-// vmResponse is used to receive the result from the VM handler.
-type vmResponse struct {
-	evaluated string
+// vmExecResponse is used to receive the execution result from the VM handler.
+type vmExecResponse struct {
+	evaluated string // evaluated janet expression
 	stdout    string
 	stderr    string
 	err       error
@@ -77,20 +77,20 @@ type vmResponse struct {
 
 // vmParseRequest is used to send a parse job to the VM handler goroutine.
 type vmParseRequest struct {
-	janetString  string
+	expression   string // janet expression
 	responseChan chan vmParseResponse
 }
 
 // vmParseResponse is used to receive the parsed result from the VM handler.
 type vmParseResponse struct {
-	value any
+	value any // parsed value (janet expression => go value)
 	err   error
 }
 
 // VM represents a Janet virtual machine instance.
 type VM struct {
-	requestChan  chan vmRequest
-	parseChan    chan vmParseRequest // for parsing janet string
+	execChan     chan vmExecRequest  // for executing janet expression
+	parseChan    chan vmParseRequest // for parsing janet expression
 	shutdownChan chan struct{}
 	wg           sync.WaitGroup
 }
@@ -105,12 +105,12 @@ func SharedVM() (vm *VM, err error) {
 
 	initDone := make(chan error, 1)
 
-	requestChan := make(chan vmRequest)
+	execChan := make(chan vmExecRequest)
 	parseChan := make(chan vmParseRequest)
 	shutdownChan := make(chan struct{})
 
 	vm = &VM{
-		requestChan:  requestChan,
+		execChan:     execChan,
 		parseChan:    parseChan,
 		shutdownChan: shutdownChan,
 	}
@@ -135,10 +135,10 @@ func SharedVM() (vm *VM, err error) {
 		// Main loop to process requests
 		for {
 			select {
-			case req := <-requestChan:
-				handleVMRequest(env, req)
+			case req := <-execChan:
+				handleExecRequest(env, req)
 			case req := <-parseChan:
-				handleVMParseRequest(env, req)
+				handleParseRequest(env, req)
 			case <-shutdownChan:
 				return
 			}
@@ -156,23 +156,23 @@ func SharedVM() (vm *VM, err error) {
 	return _sharedVM, nil
 }
 
-// handleVMRequest runs the janet code within the dedicated VM thread.
+// handleExecRequest executes the janet expression within the dedicated VM thread.
 // This function should only be called from the VM handler goroutine.
-func handleVMRequest(
+func handleExecRequest(
 	env *C.JanetTable,
-	req vmRequest,
+	req vmExecRequest,
 ) {
 	var janetResult C.Janet
 	var ret C.int
 
-	cCode := C.CString(req.code)
+	cCode := C.CString(req.expression)
 	defer C.free(unsafe.Pointer(cCode))
 
 	// create pipes for stdout and stderr
 	var stdoutPipe [2]C.int
 	var stderrPipe [2]C.int
 	if C.pipe(&stdoutPipe[0]) != 0 {
-		req.responseChan <- vmResponse{err: errors.New("failed to create stdout pipe")}
+		req.responseChan <- vmExecResponse{err: errors.New("failed to create stdout pipe")}
 		return
 	}
 	if C.pipe(&stderrPipe[0]) != 0 {
@@ -180,7 +180,7 @@ func handleVMRequest(
 		C.close(stdoutPipe[0])
 		C.close(stdoutPipe[1])
 
-		req.responseChan <- vmResponse{err: errors.New("failed to create stderr pipe")}
+		req.responseChan <- vmExecResponse{err: errors.New("failed to create stderr pipe")}
 		return
 	}
 
@@ -222,7 +222,7 @@ func handleVMRequest(
 		C.janet_to_string_b(&buffer, janetResult)
 		errOutput := C.GoStringN((*C.char)(unsafe.Pointer(buffer.data)), C.int(buffer.count))
 		C.janet_buffer_deinit(&buffer)
-		req.responseChan <- vmResponse{
+		req.responseChan <- vmExecResponse{
 			stdout: outBuf.String(),
 			stderr: errBuf.String(),
 			err:    errors.New(errOutput),
@@ -230,7 +230,7 @@ func handleVMRequest(
 		return
 	}
 
-	req.responseChan <- vmResponse{
+	req.responseChan <- vmExecResponse{
 		evaluated: janetValueToString(janetResult),
 		stdout:    outBuf.String(),
 		stderr:    errBuf.String(),
@@ -238,15 +238,15 @@ func handleVMRequest(
 	}
 }
 
-// handleVMParseRequest parses the janet string within the dedicated VM thread.
-func handleVMParseRequest(
+// handleParseRequest parses the janet string within the dedicated VM thread.
+func handleParseRequest(
 	env *C.JanetTable,
 	req vmParseRequest,
 ) {
 	var janetResult C.Janet
 	var ret C.int
 
-	cCode := C.CString(req.janetString)
+	cCode := C.CString(req.expression)
 	defer C.free(unsafe.Pointer(cCode))
 
 	// run janet code
@@ -381,24 +381,24 @@ func parseJanetValueToGo(value C.Janet) any {
 	}
 }
 
-// Execute executes a Janet `code` and returns the evaluated result, along with any output to stdout and stderr.
+// Execute executes a `janetExpression` and returns the evaluated result, along with any output to stdout and stderr.
 func (vm *VM) Execute(
 	ctx context.Context,
-	code string,
+	janetExpression string,
 ) (
 	evaluated string,
 	stdout string,
 	stderr string,
 	err error,
 ) {
-	responseChan := make(chan vmResponse, 1)
-	req := vmRequest{
-		code:         code,
+	responseChan := make(chan vmExecResponse, 1)
+	req := vmExecRequest{
+		expression:   janetExpression,
 		responseChan: responseChan,
 	}
 
 	select {
-	case vm.requestChan <- req:
+	case vm.execChan <- req:
 		// request sent
 	case <-ctx.Done():
 		return "", "", "", ctx.Err()
@@ -412,17 +412,17 @@ func (vm *VM) Execute(
 	}
 }
 
-// ParseJanetString parses a string containing janet data into a Go value.
-func (vm *VM) ParseJanetString(
+// ParseToValue parses a `janetExpression` containing janet data into a Go value.
+func (vm *VM) ParseToValue(
 	ctx context.Context,
-	janetString string,
+	janetExpression string,
 ) (
 	value any,
 	err error,
 ) {
 	responseChan := make(chan vmParseResponse, 1)
 	req := vmParseRequest{
-		janetString:  janetString,
+		expression:   janetExpression,
 		responseChan: responseChan,
 	}
 
