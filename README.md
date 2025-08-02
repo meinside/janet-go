@@ -33,27 +33,27 @@ func main() {
 	ctx := context.TODO()
 
 	// Execute a simple expression
-	output, _, _, err := vm.ExecuteString(ctx, "(+ 1 2 3)")
+	output, _, _, err := vm.Execute(ctx, "(+ 1 2 3)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 	fmt.Println(output) // Output: 6
 
 	// Define a function
-	_, _, _, err = vm.ExecuteString(ctx, "(defn add [x y] (+ x y))")
+	_, _, _, err = vm.Execute(ctx, "(defn add [x y] (+ x y))")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 
 	// and call that function
-	output, _, _, err = vm.ExecuteString(ctx, "(add 10 20)")
+	output, _, _, err = vm.Execute(ctx, "(add 10 20)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 	fmt.Println(output) // Output: 30
 
 	// Execute a malformed expression (that will lead to an error)
-	_, _, _, err = vm.ExecuteString(ctx, "(malformed expression")
+	_, _, _, err = vm.Execute(ctx, "(malformed expression")
 	if err != nil {
 		fmt.Println(err) // Output: unexpected end of source, ( opened at line 1, column 1
 	}
@@ -67,8 +67,6 @@ func main() {
 `amalgamated/janet.c`, `amalgamated/janet.h`, and `amalgamated/janetconf.h` are generated from the [source code](https://github.com/janet-lang/janet) with `amalgamate.sh`.
 
 They need to be updated when there is a new release of Janet.
-
-For clearing files compiled by cgo, run `go clean -cache`.
 
 ## License
 

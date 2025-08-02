@@ -4,13 +4,14 @@ package janet
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestExecuteString tests the ExecuteString function.
-func TestExecuteString(t *testing.T) {
+// TestExecutions tests the Execute function.
+func TestExecutions(t *testing.T) {
 	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
@@ -113,7 +114,7 @@ func TestExecuteString(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result, stdout, stderr, err := vm.ExecuteString(context.TODO(), test.input)
+		result, stdout, stderr, err := vm.Execute(context.TODO(), test.input)
 
 		if err != nil {
 			if test.expectedErrPattern == "" {
@@ -139,8 +140,8 @@ func TestExecuteString(t *testing.T) {
 	}
 }
 
-// TestTimedoutExecuteString tests the ExecuteString function which times out.
-func TestTimedoutExecuteString(t *testing.T) {
+// TestTimedoutExecutions tests the Execute function which times out.
+func TestTimedoutExecutions(t *testing.T) {
 	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
@@ -150,11 +151,77 @@ func TestTimedoutExecuteString(t *testing.T) {
 	// (intentional) timedout execution
 	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	if _, _, _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 3)`); err != nil {
+	if _, _, _, err := vm.Execute(timedoutCtx, `(os/sleep 3)`); err != nil {
 		if !strings.Contains(err.Error(), `context deadline exceeded`) {
 			t.Errorf("Expected timeout error, got '%s'", err)
 		}
 	} else {
 		t.Errorf("Should have failed with context timeout error")
+	}
+}
+
+// TestParseJanetString tests the ParseJanetString function.
+func TestParseJanetString(t *testing.T) {
+	vm, err := SharedVM()
+	if err != nil {
+		t.Fatalf("Failed to create Janet VM: %v", err)
+	}
+	defer vm.Close()
+
+	tests := []struct {
+		input    string
+		expected any
+	}{
+		{
+			input:    `"hello, world!"`,
+			expected: "hello, world!",
+		},
+		{
+			input:    `123`,
+			expected: float64(123),
+		},
+		{
+			input:    `3.14`,
+			expected: float64(3.14),
+		},
+		{
+			input:    `nil`,
+			expected: nil,
+		},
+		{
+			input:    `true`,
+			expected: true,
+		},
+		{
+			input:    `false`,
+			expected: false,
+		},
+		{
+			input:    `'(1 2 "three")`,
+			expected: []any{float64(1), float64(2), "three"},
+		},
+		{
+			input:    `@["a" "b" "c"]`,
+			expected: []any{"a", "b", "c"},
+		},
+		{
+			input:    `@{:a 1 :b 2}`,
+			expected: map[any]any{"a": float64(1), "b": float64(2)},
+		},
+		{
+			input:    `@{:a 1 :b @{:c 3}}`,
+			expected: map[any]any{"a": float64(1), "b": map[any]any{"c": float64(3)}},
+		},
+	}
+
+	for _, test := range tests {
+		value, err := vm.ParseToValue(context.TODO(), test.input)
+		if err != nil {
+			t.Errorf("ParseJanetString failed for input '%s': %v", test.input, err)
+		}
+
+		if !reflect.DeepEqual(value, test.expected) {
+			t.Errorf("Input: %s\nExpected: '%v', got: '%v'", test.input, test.expected, value)
+		}
 	}
 }
