@@ -4,6 +4,7 @@ package janet
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -156,5 +157,71 @@ func TestTimedoutExecutions(t *testing.T) {
 		}
 	} else {
 		t.Errorf("Should have failed with context timeout error")
+	}
+}
+
+// TestParseJanetString tests the ParseJanetString function.
+func TestParseJanetString(t *testing.T) {
+	vm, err := SharedVM()
+	if err != nil {
+		t.Fatalf("Failed to create Janet VM: %v", err)
+	}
+	defer vm.Close()
+
+	tests := []struct {
+		input    string
+		expected any
+	}{
+		{
+			input:    `"hello, world!"`,
+			expected: "hello, world!",
+		},
+		{
+			input:    `123`,
+			expected: float64(123),
+		},
+		{
+			input:    `3.14`,
+			expected: float64(3.14),
+		},
+		{
+			input:    `nil`,
+			expected: nil,
+		},
+		{
+			input:    `true`,
+			expected: true,
+		},
+		{
+			input:    `false`,
+			expected: false,
+		},
+		{
+			input:    `'(1 2 "three")`,
+			expected: []any{float64(1), float64(2), "three"},
+		},
+		{
+			input:    `@["a" "b" "c"]`,
+			expected: []any{"a", "b", "c"},
+		},
+		{
+			input:    `@{:a 1 :b 2}`,
+			expected: map[any]any{"a": float64(1), "b": float64(2)},
+		},
+		{
+			input:    `@{:a 1 :b @{:c 3}}`,
+			expected: map[any]any{"a": float64(1), "b": map[any]any{"c": float64(3)}},
+		},
+	}
+
+	for _, test := range tests {
+		value, err := vm.ParseJanetString(context.TODO(), test.input)
+		if err != nil {
+			t.Errorf("ParseJanetString failed for input '%s': %v", test.input, err)
+		}
+
+		if !reflect.DeepEqual(value, test.expected) {
+			t.Errorf("Input: %s\nExpected: '%v', got: '%v'", test.input, test.expected, value)
+		}
 	}
 }
