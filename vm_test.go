@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// TestExecuteString tests the ExecuteString function.
-func TestExecuteString(t *testing.T) {
+// TestExecutions tests the Execute function.
+func TestExecutions(t *testing.T) {
 	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
@@ -113,7 +113,7 @@ func TestExecuteString(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		result, stdout, stderr, err := vm.ExecuteString(context.TODO(), test.input)
+		result, stdout, stderr, err := vm.Execute(context.TODO(), test.input)
 
 		if err != nil {
 			if test.expectedErrPattern == "" {
@@ -139,8 +139,8 @@ func TestExecuteString(t *testing.T) {
 	}
 }
 
-// TestTimedoutExecuteString tests the ExecuteString function which times out.
-func TestTimedoutExecuteString(t *testing.T) {
+// TestTimedoutExecutions tests the Execute function which times out.
+func TestTimedoutExecutions(t *testing.T) {
 	vm, err := SharedVM()
 	if err != nil {
 		t.Fatalf("Failed to create Janet VM: %v", err)
@@ -150,7 +150,7 @@ func TestTimedoutExecuteString(t *testing.T) {
 	// (intentional) timedout execution
 	timedoutCtx, cancel := context.WithTimeout(context.TODO(), 1*time.Second)
 	defer cancel()
-	if _, _, _, err := vm.ExecuteString(timedoutCtx, `(os/sleep 3)`); err != nil {
+	if _, _, _, err := vm.Execute(timedoutCtx, `(os/sleep 3)`); err != nil {
 		if !strings.Contains(err.Error(), `context deadline exceeded`) {
 			t.Errorf("Expected timeout error, got '%s'", err)
 		}

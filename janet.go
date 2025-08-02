@@ -267,8 +267,8 @@ func janetValueToString(value C.Janet) string {
 	}
 }
 
-// ExecuteString executes a Janet `code` and returns the evaluated result, along with any output to stdout and stderr.
-func (vm *VM) ExecuteString(
+// Execute executes a Janet `code` and returns the evaluated result, along with any output to stdout and stderr.
+func (vm *VM) Execute(
 	ctx context.Context,
 	code string,
 ) (
