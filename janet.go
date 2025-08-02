@@ -176,6 +176,10 @@ func handleVMRequest(
 		return
 	}
 	if C.pipe(&stderrPipe[0]) != 0 {
+		// close opened pipes that were opened above
+		C.close(stdoutPipe[0])
+		C.close(stdoutPipe[1])
+
 		req.responseChan <- vmResponse{err: errors.New("failed to create stderr pipe")}
 		return
 	}
@@ -362,12 +366,13 @@ func parseJanetValueToGo(value C.Janet) any {
 		kv := C.janet_unwrap_struct(value)
 		length := C.janet_struct_len(kv)
 		result := make(map[any]any)
-		// C-style array iteration
 		for i := range length {
 			currentKV := (*C.JanetKV)(unsafe.Pointer(uintptr(unsafe.Pointer(kv)) + uintptr(i)*unsafe.Sizeof(*kv)))
-			key := parseJanetValueToGo(currentKV.key)
-			val := parseJanetValueToGo(currentKV.value)
-			result[key] = val
+			if C.janet_checktype(currentKV.key, C.JANET_NIL) == 0 {
+				key := parseJanetValueToGo(currentKV.key)
+				val := parseJanetValueToGo(currentKV.value)
+				result[key] = val
+			}
 		}
 		return result
 	default:
