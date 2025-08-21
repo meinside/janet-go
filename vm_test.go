@@ -77,6 +77,11 @@ func TestExecutions(t *testing.T) {
 			input:             `'(1 2 (3 4) 5)`,
 			expectedEvaluated: `(1 2 (3 4) 5)`,
 		},
+		// (keywords)
+		{
+			input:             `:hello`,
+			expectedEvaluated: `:hello`,
+		},
 		// (nil)
 		{
 			input:             `nil`,
@@ -206,11 +211,11 @@ func TestParseJanetString(t *testing.T) {
 		},
 		{
 			input:    `@{:a 1 :b 2}`,
-			expected: map[any]any{"a": float64(1), "b": float64(2)},
+			expected: map[any]any{":a": float64(1), ":b": float64(2)},
 		},
 		{
 			input:    `@{:a 1 :b @{:c 3}}`,
-			expected: map[any]any{"a": float64(1), "b": map[any]any{"c": float64(3)}},
+			expected: map[any]any{":a": float64(1), ":b": map[any]any{":c": float64(3)}},
 		},
 	}
 
