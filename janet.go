@@ -300,6 +300,8 @@ func janetValueToString(value C.Janet) string {
 		return C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_string(value))))
 	case C.JANET_SYMBOL:
 		return C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_symbol(value))))
+	case C.JANET_KEYWORD:
+		return ":" + C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_keyword(value))))
 	case C.JANET_TUPLE:
 		var data *C.Janet
 		var length C.int32_t
@@ -338,12 +340,11 @@ func parseJanetValueToGo(value C.Janet) any {
 	case C.JANET_SYMBOL:
 		return C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_symbol(value))))
 	case C.JANET_KEYWORD:
-		return C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_keyword(value))))
+		return ":" + C.GoString((*C.char)(unsafe.Pointer(C.janet_unwrap_keyword(value))))
 	case C.JANET_TUPLE, C.JANET_ARRAY:
 		var data *C.Janet
 		var length C.int32_t
 		C.janet_indexed_view(value, &data, &length)
-
 		slice := make([]any, length)
 		for i := C.int32_t(0); i < length; i++ {
 			elem := *(*C.Janet)(unsafe.Pointer(uintptr(unsafe.Pointer(data)) + uintptr(i)*unsafe.Sizeof(*data)))
