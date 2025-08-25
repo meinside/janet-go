@@ -4,15 +4,16 @@
 #define JANETCONF_H
 
 #define JANET_VERSION_MAJOR 1
-#define JANET_VERSION_MINOR 38
+#define JANET_VERSION_MINOR 39
 #define JANET_VERSION_PATCH 0
 #define JANET_VERSION_EXTRA ""
-#define JANET_VERSION "1.38.0"
+#define JANET_VERSION "1.39.0"
 
 /* #define JANET_BUILD "local" */
 
 /* These settings all affect linking, so use cautiously. */
 /* #define JANET_SINGLE_THREADED */
+/* #define JANET_THREAD_LOCAL _Thread_local */
 /* #define JANET_NO_DYNAMIC_MODULES */
 /* #define JANET_NO_NANBOX */
 /* #define JANET_API __attribute__((visibility ("default"))) */
