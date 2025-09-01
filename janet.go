@@ -46,6 +46,10 @@ static void restoreStderr(int original_fd) {
         close(original_fd);
     }
 }
+
+static char* getJanetVersionString() {
+    return JANET_VERSION;
+}
 */
 import "C"
 
@@ -57,6 +61,14 @@ import (
 	"sync"
 	"unsafe"
 )
+
+// Version returns the version string of the Janet language.
+func Version() string {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	return C.GoString(C.getJanetVersionString())
+}
 
 // shared VM
 var _sharedVM *VM

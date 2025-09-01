@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+// TestVersion tests the Version function.
+func TestVersion(t *testing.T) {
+	if ver := Version(); len(ver) <= 0 {
+		t.Errorf("Failed to get Janet version")
+	}
+}
+
 // TestExecutions tests the Execute function.
 func TestExecutions(t *testing.T) {
 	vm, err := SharedVM()
