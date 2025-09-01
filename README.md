@@ -24,6 +24,9 @@ import (
 )
 
 func main() {
+	ver := janet.Version()
+	log.Printf("Janet version: %s", ver)
+
 	vm, err := janet.SharedVM()
 	if err != nil {
 		log.Fatalf("Failed to create Janet VM: %v", err)
