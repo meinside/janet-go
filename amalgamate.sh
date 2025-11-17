@@ -4,12 +4,12 @@
 #
 # This script generates amalgamated janet.c and its header files from Janet repository.
 #
-# last update: 2025.08.31.
+# last update: 2025.11.17.
 
 set -euo pipefail
 
 # NOTE: keep in sync with [janet-lang/janet](https://github.com/janet-lang/janet/releases)
-JANET_VERSION="v1.39.1"
+JANET_VERSION="v1.40.1"
 
 JANET_DIR="vendor/janet"
 AMALGAMATED_DIR="amalgamated"
