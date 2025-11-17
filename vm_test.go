@@ -209,20 +209,36 @@ func TestParseJanetString(t *testing.T) {
 			expected: false,
 		},
 		{
-			input:    `'(1 2 "three")`,
-			expected: []any{float64(1), float64(2), "three"},
+			input: `'(1 2 "three")`,
+			expected: []any{
+				float64(1),
+				float64(2),
+				"three",
+			},
 		},
 		{
-			input:    `@["a" "b" "c"]`,
-			expected: []any{"a", "b", "c"},
+			input: `@["a" "b" "c"]`,
+			expected: []any{
+				"a",
+				"b",
+				"c",
+			},
 		},
 		{
-			input:    `@{:a 1 :b 2}`,
-			expected: map[any]any{":a": float64(1), ":b": float64(2)},
+			input: `@{:a 1 :b 2}`,
+			expected: map[any]any{
+				":a": float64(1),
+				":b": float64(2),
+			},
 		},
 		{
-			input:    `@{:a 1 :b @{:c 3}}`,
-			expected: map[any]any{":a": float64(1), ":b": map[any]any{":c": float64(3)}},
+			input: `@{:a 1 :b @{:c 3}}`,
+			expected: map[any]any{
+				":a": float64(1),
+				":b": map[any]any{
+					":c": float64(3),
+				},
+			},
 		},
 	}
 
