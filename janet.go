@@ -59,6 +59,7 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"syscall"
 	"unsafe"
 )
 
@@ -70,8 +71,14 @@ func Version() string {
 	return C.GoString(C.getJanetVersionString())
 }
 
-// shared VM
-var _sharedVM *VM
+// shared VM — guarded by sharedVMOnce so concurrent SharedVM() calls never
+// spawn more than one VM handler goroutine.
+var (
+	_sharedVM     *VM
+	_sharedVMErr  error
+	sharedVMOnce  = &sync.Once{}
+	sharedVMMutex sync.Mutex // guards reset of _sharedVM / sharedVMOnce when Close is called
+)
 
 // vmExecRequest is used to send a execution job to the VM handler goroutine.
 type vmExecRequest struct {
@@ -105,67 +112,90 @@ type VM struct {
 	parseChan    chan vmParseRequest // for parsing janet expression
 	shutdownChan chan struct{}
 	wg           sync.WaitGroup
+	closeOnce    sync.Once // ensures Close() is idempotent
 }
 
-// SharedVM initializes and returns a new shared Janet VM.
-// It starts a dedicated OS-thread-locked goroutine to handle all CGo calls
-// sequentially, ensuring thread safety.
-func SharedVM() (vm *VM, err error) {
-	if _sharedVM != nil {
-		return _sharedVM, nil
-	}
+// SharedVM initializes and returns a shared Janet VM. Safe for concurrent
+// callers: the VM handler goroutine is started at most once per process
+// lifetime (until Close is called). It is locked to a dedicated OS thread
+// so all cgo calls into Janet are serialized, ensuring thread safety.
+func SharedVM() (*VM, error) {
+	sharedVMMutex.Lock()
+	once := sharedVMOnce
+	sharedVMMutex.Unlock()
 
-	initDone := make(chan error, 1)
-
-	execChan := make(chan vmExecRequest)
-	parseChan := make(chan vmParseRequest)
-	shutdownChan := make(chan struct{})
-
-	vm = &VM{
-		execChan:     execChan,
-		parseChan:    parseChan,
-		shutdownChan: shutdownChan,
-	}
-	vm.wg.Add(1)
-
-	// The dedicated VM handler goroutine
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		defer vm.wg.Done()
-
-		C.janet_init()
-		defer C.janet_deinit()
-
-		env := C.janet_core_env(nil)
-		if env == nil {
-			initDone <- errors.New("failed to create janet environment")
-			return
+	once.Do(func() {
+		vm := &VM{
+			execChan:     make(chan vmExecRequest),
+			parseChan:    make(chan vmParseRequest),
+			shutdownChan: make(chan struct{}),
 		}
-		close(initDone) // Signal successful initialization
+		vm.wg.Add(1)
 
-		// Main loop to process requests
-		for {
-			select {
-			case req := <-execChan:
-				handleExecRequest(env, req)
-			case req := <-parseChan:
-				handleParseRequest(env, req)
-			case <-shutdownChan:
+		initDone := make(chan error, 1)
+
+		go func() {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			defer vm.wg.Done()
+
+			C.janet_init()
+			defer C.janet_deinit()
+
+			env := C.janet_core_env(nil)
+			if env == nil {
+				initDone <- errors.New("failed to create janet environment")
 				return
 			}
+			close(initDone)
+
+			for {
+				select {
+				case req := <-vm.execChan:
+					handleExecRequest(env, req)
+				case req := <-vm.parseChan:
+					handleParseRequest(env, req)
+				case <-vm.shutdownChan:
+					return
+				}
+			}
+		}()
+
+		if err := <-initDone; err != nil {
+			vm.wg.Wait()
+			_sharedVMErr = err
+			return
 		}
-	}()
 
-	// Wait for initialization to complete
-	err = <-initDone
-	if err != nil {
-		vm.wg.Wait() // Ensure the goroutine has exited
-		return nil, err
+		_sharedVM = vm
+	})
+
+	return _sharedVM, _sharedVMErr
+}
+
+// drainPipe reads from readFd until EOF, appending to buf, then closes readFd.
+// Runs concurrently with the cgo call whose output it captures, so pipe buffers
+// cannot fill and deadlock the writer.
+func drainPipe(readFd C.int, buf *bytes.Buffer, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer C.close(readFd)
+
+	chunk := make([]byte, 4096)
+	for {
+		n, err := C.read(readFd, unsafe.Pointer(&chunk[0]), C.size_t(len(chunk)))
+		if n > 0 {
+			buf.Write(chunk[:n])
+		}
+		if n == 0 {
+			return // EOF
+		}
+		if n < 0 {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			return
+		}
 	}
-
-	_sharedVM = vm
-	return _sharedVM, nil
 }
 
 // handleExecRequest executes the janet expression within the dedicated VM thread.
@@ -196,36 +226,28 @@ func handleExecRequest(
 		return
 	}
 
-	// redirect stdout and stderr
+	// Start reader goroutines BEFORE redirecting so pipes are drained concurrently
+	// with janet_dostring. Otherwise the pipe buffer (~64KB) can fill and janet
+	// will block forever on write.
+	var outBuf, errBuf bytes.Buffer
+	var readerWg sync.WaitGroup
+	readerWg.Add(2)
+	go drainPipe(stdoutPipe[0], &outBuf, &readerWg)
+	go drainPipe(stderrPipe[0], &errBuf, &readerWg)
+
+	// redirect stdout and stderr (this closes the write-end fds passed in)
 	originalStdoutFd := C.redirectStdout(stdoutPipe[1])
 	originalStderrFd := C.redirectStderr(stderrPipe[1])
 
 	// run janet code
 	ret = C.janet_dostring(env, cCode, nil, &janetResult)
 
-	// restore stdout and stderr
+	// Restore stdout/stderr — this closes the duped write ends, causing EOF
+	// on the reader goroutines so they exit.
 	C.restoreStdout(originalStdoutFd)
 	C.restoreStderr(originalStderrFd)
 
-	// read all output from pipes
-	var outBuf, errBuf bytes.Buffer
-	buf := make([]byte, 1024)
-	for {
-		n, _ := C.read(stdoutPipe[0], unsafe.Pointer(&buf[0]), 1024)
-		if n <= 0 {
-			break
-		}
-		outBuf.Write(buf[:n])
-	}
-	for {
-		n, _ := C.read(stderrPipe[0], unsafe.Pointer(&buf[0]), 1024)
-		if n <= 0 {
-			break
-		}
-		errBuf.Write(buf[:n])
-	}
-	C.close(stdoutPipe[0])
-	C.close(stderrPipe[0])
+	readerWg.Wait()
 
 	// and return the result
 	if ret != C.JANET_SIGNAL_OK {
@@ -282,13 +304,22 @@ func handleParseRequest(
 	}
 }
 
-// Close deinitializes the Janet VM.
+// Close deinitializes the Janet VM. Safe to call multiple times; subsequent
+// calls are no-ops. After Close returns, a fresh VM can be obtained by
+// calling SharedVM() again.
 func (vm *VM) Close() {
-	if _sharedVM != nil {
+	vm.closeOnce.Do(func() {
 		close(vm.shutdownChan)
 		vm.wg.Wait()
-		_sharedVM = nil
-	}
+
+		sharedVMMutex.Lock()
+		defer sharedVMMutex.Unlock()
+		if _sharedVM == vm {
+			_sharedVM = nil
+			_sharedVMErr = nil
+			sharedVMOnce = &sync.Once{} // allow a new SharedVM() after close
+		}
+	})
 }
 
 // janetValueToString converts a Janet value to its string representation.
@@ -394,16 +425,24 @@ func parseJanetValueToGo(value C.Janet) any {
 	}
 }
 
-// Execute executes a `janetExpression` and returns the evaluated result, along with any output to stdout and stderr.
+// ExecutionResult is returned by VM.Execute. It bundles the evaluated value's
+// string form and any captured standard output/error produced during
+// evaluation. Stdout and Stderr may contain output even when the evaluation
+// itself returned an error.
+type ExecutionResult struct {
+	Evaluated string
+	Stdout    string
+	Stderr    string
+}
+
+// Execute evaluates a Janet expression and returns its result along with any
+// captured stdout/stderr. If ctx is cancelled before the request is dispatched
+// or before the result arrives, Execute returns ctx.Err(); note that a
+// cancelled context does not interrupt Janet evaluation already in progress.
 func (vm *VM) Execute(
 	ctx context.Context,
 	janetExpression string,
-) (
-	evaluated string,
-	stdout string,
-	stderr string,
-	err error,
-) {
+) (ExecutionResult, error) {
 	responseChan := make(chan vmExecResponse, 1)
 	req := vmExecRequest{
 		expression:   janetExpression,
@@ -412,16 +451,19 @@ func (vm *VM) Execute(
 
 	select {
 	case vm.execChan <- req:
-		// request sent
 	case <-ctx.Done():
-		return "", "", "", ctx.Err()
+		return ExecutionResult{}, ctx.Err()
 	}
 
 	select {
 	case res := <-responseChan:
-		return res.evaluated, res.stdout, res.stderr, res.err
+		return ExecutionResult{
+			Evaluated: res.evaluated,
+			Stdout:    res.stdout,
+			Stderr:    res.stderr,
+		}, res.err
 	case <-ctx.Done():
-		return "", "", "", ctx.Err()
+		return ExecutionResult{}, ctx.Err()
 	}
 }
 

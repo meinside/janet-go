@@ -33,35 +33,50 @@ func main() {
 	}
 	defer vm.Close()
 
-	ctx := context.TODO()
+	ctx := context.Background()
 
 	// Execute a simple expression
-	output, _, _, err := vm.Execute(ctx, "(+ 1 2 3)")
+	res, err := vm.Execute(ctx, "(+ 1 2 3)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
-	fmt.Println(output) // Output: 6
+	fmt.Println(res.Evaluated) // Output: 6
 
 	// Define a function
-	_, _, _, err = vm.Execute(ctx, "(defn add [x y] (+ x y))")
-	if err != nil {
+	if _, err := vm.Execute(ctx, "(defn add [x y] (+ x y))"); err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
 
 	// and call that function
-	output, _, _, err = vm.Execute(ctx, "(add 10 20)")
+	res, err = vm.Execute(ctx, "(add 10 20)")
 	if err != nil {
 		log.Fatalf("Failed to execute Janet code: %v", err)
 	}
-	fmt.Println(output) // Output: 30
+	fmt.Println(res.Evaluated) // Output: 30
 
 	// Execute a malformed expression (that will lead to an error)
-	_, _, _, err = vm.Execute(ctx, "(malformed expression")
-	if err != nil {
+	if _, err := vm.Execute(ctx, "(malformed expression"); err != nil {
 		fmt.Println(err) // Output: unexpected end of source, ( opened at line 1, column 1
 	}
 }
 ```
+
+## Concurrency
+
+`SharedVM()` returns a process-wide singleton `VM` backed by a dedicated
+OS-thread-locked goroutine. All `Execute` and `ParseToValue` calls are
+forwarded to that goroutine and serialized internally, so the VM is safe
+to use from multiple goroutines without external synchronization — calls
+are queued and processed one at a time.
+
+`Execute` and `ParseToValue` accept a `context.Context`. If the context is
+cancelled (or its deadline elapses) before the request is dispatched or
+before the result arrives, the call returns `ctx.Err()`. Note that
+cancellation does **not** interrupt Janet evaluation already in progress;
+the work continues on the VM goroutine until it finishes.
+
+`Close()` is idempotent. After closing the shared VM, a subsequent call
+to `SharedVM()` will start a fresh VM.
 
 ## Note
 
