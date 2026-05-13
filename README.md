@@ -1,5 +1,7 @@
 # janet-go
 
+[![test](https://github.com/meinside/janet-go/actions/workflows/test.yml/badge.svg)](https://github.com/meinside/janet-go/actions/workflows/test.yml)
+
 This is a Go library that provides a wrapper around the [Janet](https://janet-lang.org/) programming language.
 
 It allows you to embed a Janet VM in your Go programs and run Janet codes.
