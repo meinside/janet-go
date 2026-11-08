@@ -118,7 +118,7 @@ extern "C" {
 #endif
 
 /* Check 64-bit vs 32-bit */
-#if ((defined(__x86_64__) || defined(_M_X64)) \
+#if ((defined(__x86_64__) || defined(_M_X64)) && !defined(__ILP32__) \
      && (defined(JANET_POSIX) || defined(JANET_WINDOWS))) \
     || (defined(_WIN64)) /* Windows 64 bit */ \
     || (defined(__ia64__) && defined(__LP64__)) /* Itanium in LP64 mode */ \
@@ -1689,6 +1689,7 @@ JANET_API int janet_parser_has_more(JanetParser *parser);
 
 /* Assembly */
 #ifdef JANET_ASSEMBLER
+#define JANET_ASSEMBLE_FLAG_OPTIMIZE 1
 typedef struct JanetAssembleResult JanetAssembleResult;
 enum JanetAssembleStatus {
     JANET_ASSEMBLE_OK,
@@ -2219,7 +2220,6 @@ JANET_API void *janet_getpointer(const Janet *argv, int32_t n);
 
 JANET_API int32_t janet_getnat(const Janet *argv, int32_t n);
 JANET_API int32_t janet_getinteger(const Janet *argv, int32_t n);
-JANET_API float janet_getfloat(const Janet *argv, int32_t n);
 JANET_API int8_t janet_getinteger8(const Janet *argv, int32_t n);
 JANET_API int16_t janet_getinteger16(const Janet *argv, int32_t n);
 JANET_API int64_t janet_getinteger64(const Janet *argv, int32_t n);
